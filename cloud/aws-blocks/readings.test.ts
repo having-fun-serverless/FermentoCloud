@@ -76,7 +76,23 @@ test('listReadingsSince returns readings after "since", ascending, capped by lim
     new URLSearchParams({ since: '2026-06-01T12:00:00.000Z', limit: '10' }),
   );
   assert.strictEqual(result.statusCode, 200);
-  const body = result.body as { readings: Array<{ timestamp: string }> };
-  const timestamps = body.readings.map((r) => r.timestamp);
-  assert.deepStrictEqual(timestamps, ['2026-06-02T00:00:00.000Z', '2026-06-03T00:00:00.000Z']);
+  const body = result.body as { readings: Array<{ timestamp: string; value: number }> };
+
+  // The shared table may hold readings from other tests, so assert presence/order of
+  // this test's own data rather than exact array equality.
+  assert.ok(
+    !body.readings.some((r) => r.timestamp === '2026-06-01T00:00:00.000Z'),
+    'reading at "since" boundary should be excluded (greaterThan, not greaterThanOrEqual)',
+  );
+
+  const june02 = body.readings.find((r) => r.timestamp === '2026-06-02T00:00:00.000Z');
+  const june03 = body.readings.find((r) => r.timestamp === '2026-06-03T00:00:00.000Z');
+  assert.ok(june02, 'expected 2026-06-02 reading to be present');
+  assert.ok(june03, 'expected 2026-06-03 reading to be present');
+  assert.strictEqual(june02.value, 21);
+  assert.strictEqual(june03.value, 22);
+
+  const june02Index = body.readings.findIndex((r) => r.timestamp === '2026-06-02T00:00:00.000Z');
+  const june03Index = body.readings.findIndex((r) => r.timestamp === '2026-06-03T00:00:00.000Z');
+  assert.ok(june02Index < june03Index, 'expected 2026-06-02 to come before 2026-06-03 (ascending order)');
 });
