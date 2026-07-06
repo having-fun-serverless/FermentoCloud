@@ -42,3 +42,43 @@ export async function putReading(
   });
   return { statusCode: 201, body: { timestamp, temperatureC } };
 }
+
+const DEFAULT_LIMIT = 100;
+const DEFAULT_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+const MAX_LIMIT = 1000;
+
+export function parseListParams(searchParams: URLSearchParams): { since: string; limit: number } {
+  const sinceParam = searchParams.get('since');
+  const since =
+    sinceParam && !Number.isNaN(Date.parse(sinceParam))
+      ? sinceParam
+      : new Date(Date.now() - DEFAULT_LOOKBACK_MS).toISOString();
+
+  const limitParam = Number(searchParams.get('limit'));
+  const limit =
+    Number.isInteger(limitParam) && limitParam > 0 && limitParam <= MAX_LIMIT
+      ? limitParam
+      : DEFAULT_LIMIT;
+
+  return { since, limit };
+}
+
+export async function listReadingsSince(
+  table: Pick<DistributedTable<Reading>, 'query'>,
+  deviceId: string,
+  searchParams: URLSearchParams,
+): Promise<HandlerResult> {
+  const { since, limit } = parseListParams(searchParams);
+  const items = [];
+  for await (const item of table.query({
+    where: {
+      deviceId: { equals: deviceId },
+      timestamp: { greaterThan: since },
+    },
+    limit,
+    order: 'asc',
+  })) {
+    items.push(item);
+  }
+  return { statusCode: 200, body: { readings: items } };
+}
