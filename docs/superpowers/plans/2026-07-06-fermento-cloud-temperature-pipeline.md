@@ -17,6 +17,7 @@
 - `DistributedTable` key config uses `{ partitionKey, sortKey }` (not `{ partition, sort }`) and query conditions use `{ fieldName: { equals: v } }` / `{ fieldName: { greaterThan: v } }` etc. — confirmed from the installed package's `src/types.ts`.
 - Temperature is always Celsius; no unit field is stored (per approved spec).
 - `deviceId` is a fixed server-side constant (`"fermenter-1"`), never sent by the Pi.
+- Per [AWS Blocks best practices](https://docs.aws.amazon.com/blocks/latest/devguide/best-practices.html): keep the IFC layer (`index.ts`) thin (Block instantiations only, no business logic); use named error classes (e.g. `ValidationError`), never generic `Error`, so only genuine validation failures become 400s and unexpected errors still bubble up to a 500 instead of being masked; extract business logic into functions that take Block instances as explicit parameters rather than importing module-level singletons, so tests can pass in either the real (locally-mocked) table or a broken fake.
 
 ---
 
@@ -257,8 +258,8 @@ EOF
 - Test: `cloud/aws-blocks/readings.test.ts`
 
 **Interfaces:**
-- Consumes: `readings: DistributedTable<Reading>`, `DEVICE_ID: string` from `./index.js` (Task 2).
-- Produces: `parseReadingBody(raw: unknown): { timestamp: string; temperatureC: number }` (throws `Error` on invalid input), `putReading(raw: unknown): Promise<{ statusCode: number; body: unknown }>`.
+- Consumes: `Reading` type from `./index.js` (Task 2); the real `readings`/`DEVICE_ID` (Task 2) are passed in explicitly by tests and by the handler (Task 5), not imported as module-level singletons here.
+- Produces: `class ValidationError extends Error`, `parseReadingBody(raw: unknown): { timestamp: string; temperatureC: number }` (throws `ValidationError` on invalid input), `putReading(table: Pick<DistributedTable<Reading>, 'put'>, deviceId: string, raw: unknown): Promise<HandlerResult>`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -266,15 +267,20 @@ Create `cloud/aws-blocks/readings.test.ts`:
 ```typescript
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { parseReadingBody, putReading } from './readings.js';
+import { parseReadingBody, putReading, ValidationError } from './readings.js';
+import { readings, DEVICE_ID } from './index.js';
 
 test('parseReadingBody accepts a valid body', () => {
   const result = parseReadingBody({ timestamp: '2026-07-06T12:00:00.000Z', temperatureC: 21.5 });
   assert.deepStrictEqual(result, { timestamp: '2026-07-06T12:00:00.000Z', temperatureC: 21.5 });
 });
 
-test('parseReadingBody rejects a missing timestamp', () => {
-  assert.throws(() => parseReadingBody({ temperatureC: 21.5 }), /timestamp/);
+test('parseReadingBody rejects a missing timestamp with a ValidationError', () => {
+  assert.throws(() => parseReadingBody({ temperatureC: 21.5 }), (err: unknown) => {
+    assert.ok(err instanceof ValidationError);
+    assert.match((err as Error).message, /timestamp/);
+    return true;
+  });
 });
 
 test('parseReadingBody rejects a non-numeric temperatureC', () => {
@@ -285,12 +291,34 @@ test('parseReadingBody rejects a non-numeric temperatureC', () => {
 });
 
 test('putReading stores a reading and returns 201', async () => {
-  const result = await putReading({ timestamp: '2026-07-06T13:00:00.000Z', temperatureC: 22.1 });
+  const result = await putReading(readings, DEVICE_ID, {
+    timestamp: '2026-07-06T13:00:00.000Z',
+    temperatureC: 22.1,
+  });
   assert.strictEqual(result.statusCode, 201);
 });
 
-test('putReading rejects a malformed body', async () => {
-  await assert.rejects(() => putReading({ temperatureC: 22.1 }));
+test('putReading rejects a malformed body with a ValidationError', async () => {
+  await assert.rejects(
+    () => putReading(readings, DEVICE_ID, { temperatureC: 22.1 }),
+    (err: unknown) => err instanceof ValidationError,
+  );
+});
+
+test('putReading lets a non-validation error from the table bubble up unchanged', async () => {
+  const brokenTable = {
+    put: async () => {
+      throw new Error('DynamoDB is unavailable');
+    },
+  };
+  await assert.rejects(
+    () =>
+      putReading(brokenTable, DEVICE_ID, {
+        timestamp: '2026-07-06T13:00:00.000Z',
+        temperatureC: 22.1,
+      }),
+    (err: unknown) => !(err instanceof ValidationError) && (err as Error).message === 'DynamoDB is unavailable',
+  );
 });
 ```
 
@@ -302,18 +330,27 @@ Expected: FAIL — `readings.ts` does not exist yet.
 - [ ] **Step 3: Create `cloud/aws-blocks/readings.ts` (write path only)**
 
 ```typescript
-import { readings, DEVICE_ID } from './index.js';
+import type { DistributedTable } from '@aws-blocks/blocks';
+import type { Reading } from './index.js';
+
+/** Named per AWS Blocks best practices — lets callers distinguish bad input from internal failures. */
+export class ValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ValidationError';
+  }
+}
 
 export function parseReadingBody(raw: unknown): { timestamp: string; temperatureC: number } {
   if (typeof raw !== 'object' || raw === null) {
-    throw new Error('Body must be a JSON object');
+    throw new ValidationError('Body must be a JSON object');
   }
   const { timestamp, temperatureC } = raw as Record<string, unknown>;
   if (typeof timestamp !== 'string' || Number.isNaN(Date.parse(timestamp))) {
-    throw new Error('timestamp must be a valid ISO 8601 string');
+    throw new ValidationError('timestamp must be a valid ISO 8601 string');
   }
   if (typeof temperatureC !== 'number' || Number.isNaN(temperatureC)) {
-    throw new Error('temperatureC must be a number');
+    throw new ValidationError('temperatureC must be a number');
   }
   return { timestamp, temperatureC };
 }
@@ -323,10 +360,14 @@ export interface HandlerResult {
   body: unknown;
 }
 
-export async function putReading(raw: unknown): Promise<HandlerResult> {
+export async function putReading(
+  table: Pick<DistributedTable<Reading>, 'put'>,
+  deviceId: string,
+  raw: unknown,
+): Promise<HandlerResult> {
   const { timestamp, temperatureC } = parseReadingBody(raw);
-  await readings.put({
-    deviceId: DEVICE_ID,
+  await table.put({
+    deviceId,
     timestamp,
     metric: 'temperature',
     value: temperatureC,
@@ -338,7 +379,7 @@ export async function putReading(raw: unknown): Promise<HandlerResult> {
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd cloud && npx tsx --test aws-blocks/readings.test.ts`
-Expected: PASS (5 tests).
+Expected: PASS (6 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -361,8 +402,8 @@ EOF
 - Modify: `cloud/aws-blocks/readings.test.ts`
 
 **Interfaces:**
-- Consumes: `readings`, `DEVICE_ID` (Task 2); `HandlerResult` (Task 3, same file).
-- Produces: `parseListParams(searchParams: URLSearchParams): { since: string; limit: number }`, `listReadingsSince(searchParams: URLSearchParams): Promise<HandlerResult>`.
+- Consumes: `HandlerResult` (Task 3, same file); `Reading` type from `./index.js` (Task 2).
+- Produces: `parseListParams(searchParams: URLSearchParams): { since: string; limit: number }`, `listReadingsSince(table: Pick<DistributedTable<Reading>, 'query'>, deviceId: string, searchParams: URLSearchParams): Promise<HandlerResult>`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -382,11 +423,13 @@ test('parseListParams clamps an invalid limit to the default', () => {
 });
 
 test('listReadingsSince returns readings after "since", ascending, capped by limit', async () => {
-  await putReading({ timestamp: '2026-06-01T00:00:00.000Z', temperatureC: 20 });
-  await putReading({ timestamp: '2026-06-02T00:00:00.000Z', temperatureC: 21 });
-  await putReading({ timestamp: '2026-06-03T00:00:00.000Z', temperatureC: 22 });
+  await putReading(readings, DEVICE_ID, { timestamp: '2026-06-01T00:00:00.000Z', temperatureC: 20 });
+  await putReading(readings, DEVICE_ID, { timestamp: '2026-06-02T00:00:00.000Z', temperatureC: 21 });
+  await putReading(readings, DEVICE_ID, { timestamp: '2026-06-03T00:00:00.000Z', temperatureC: 22 });
 
   const result = await listReadingsSince(
+    readings,
+    DEVICE_ID,
     new URLSearchParams({ since: '2026-06-01T12:00:00.000Z', limit: '10' }),
   );
   assert.strictEqual(result.statusCode, 200);
@@ -426,12 +469,16 @@ export function parseListParams(searchParams: URLSearchParams): { since: string;
   return { since, limit };
 }
 
-export async function listReadingsSince(searchParams: URLSearchParams): Promise<HandlerResult> {
+export async function listReadingsSince(
+  table: Pick<DistributedTable<Reading>, 'query'>,
+  deviceId: string,
+  searchParams: URLSearchParams,
+): Promise<HandlerResult> {
   const { since, limit } = parseListParams(searchParams);
   const items = [];
-  for await (const item of readings.query({
+  for await (const item of table.query({
     where: {
-      deviceId: { equals: DEVICE_ID },
+      deviceId: { equals: deviceId },
       timestamp: { greaterThan: since },
     },
     limit,
@@ -446,7 +493,7 @@ export async function listReadingsSince(searchParams: URLSearchParams): Promise<
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd cloud && npx tsx --test aws-blocks/readings.test.ts`
-Expected: PASS (8 tests).
+Expected: PASS (9 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -470,7 +517,7 @@ EOF
 - Modify: `cloud/package.json` (add `@aws-lambda-powertools/event-handler`, `aws-lambda`, `@types/aws-lambda` deps)
 
 **Interfaces:**
-- Consumes: `putReading`, `listReadingsSince` from `./readings.js` (Tasks 3, 4); `logger` from `./index.js` (Task 2).
+- Consumes: `putReading`, `listReadingsSince`, `ValidationError` from `./readings.js` (Tasks 3, 4); `readings`, `DEVICE_ID`, `logger` from `./index.js` (Task 2).
 - Produces: `export const handler: (event: unknown, context: Context) => Promise<unknown>`.
 
 - [ ] **Step 1: Install dependencies**
@@ -546,8 +593,8 @@ Expected: FAIL — `readings.handler.ts` does not exist yet.
 ```typescript
 import { Router, BadRequestError } from '@aws-lambda-powertools/event-handler/http';
 import type { Context } from 'aws-lambda';
-import { putReading, listReadingsSince } from './readings.js';
-import { logger } from './index.js';
+import { putReading, listReadingsSince, ValidationError } from './readings.js';
+import { readings, DEVICE_ID, logger } from './index.js';
 
 const app = new Router();
 
@@ -559,15 +606,18 @@ app.post('/readings', async ({ req }) => {
     throw new BadRequestError('Body must be valid JSON');
   }
   try {
-    return await putReading(body);
+    return await putReading(readings, DEVICE_ID, body);
   } catch (error) {
-    throw new BadRequestError((error as Error).message);
+    if (error instanceof ValidationError) {
+      throw new BadRequestError(error.message);
+    }
+    throw error; // not a validation problem — let it become a 500, don't mask it as a 400
   }
 });
 
 app.get('/readings', async ({ req }) => {
   const url = new URL(req.url);
-  return await listReadingsSince(url.searchParams);
+  return await listReadingsSince(readings, DEVICE_ID, url.searchParams);
 });
 
 export const handler = async (event: unknown, context: Context) => {
