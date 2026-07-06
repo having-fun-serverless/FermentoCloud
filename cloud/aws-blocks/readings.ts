@@ -1,5 +1,5 @@
 import type { DistributedTable } from '@aws-blocks/blocks';
-import type { Reading } from './index.js';
+import type { Reading, readings } from './index.js';
 
 /** Named per AWS Blocks best practices — lets callers distinguish bad input from internal failures. */
 export class ValidationError extends Error {
@@ -64,7 +64,7 @@ export function parseListParams(searchParams: URLSearchParams): { since: string;
 }
 
 export async function listReadingsSince(
-  table: Pick<DistributedTable<Reading>, 'query'>,
+  table: Pick<typeof readings, 'query'>,
   deviceId: string,
   searchParams: URLSearchParams,
 ): Promise<HandlerResult> {
