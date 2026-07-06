@@ -91,9 +91,11 @@ range queries by sort key, which the flat `KVStore` explicitly does not support.
   but a real key rather than a hardcoded singleton row).
 - Sort key: `timestamp` (ISO 8601 string — sorts correctly as text, human-readable
   in the console for blog screenshots).
-- Item shape: `{ deviceId, timestamp, metric: "temperature", value: number, unit: "C" }`.
-  The `metric` field is what lets Phase 2 add `metric: "ph"` items to the same
-  table with no schema change.
+- Item shape: `{ deviceId, timestamp, metric: "temperature", value: number }`.
+  Unit is not stored — temperature is always recorded in the same unit (Celsius),
+  fixed by convention in the Pi collector and any readers. The `metric` field is
+  what lets Phase 2 add `metric: "ph"` items to the same table with no schema
+  change.
 
 ## API
 
@@ -115,14 +117,21 @@ Unexpected exceptions in either route are caught by Powertools and logged via th
 
 ## IAM identities
 
-Three separate IAM identities, each an IAM user with a long-lived access key,
-scoped via policy to `lambda:InvokeFunctionUrl` on exactly one function ARN:
+Two IAM identities, each an IAM user with a long-lived access key, scoped via
+policy to `lambda:InvokeFunctionUrl` on exactly one function ARN:
 
 | Identity | Scoped to | Used by |
 |---|---|---|
 | `fermento-pi-writer` | prod Function URL | Pi's `collector.py`, signs POSTs |
 | `fermento-agent-reader` | prod Function URL | External AI agent, signs GETs (built/owned outside this repo) |
-| `fermento-e2e-tester` | e2e Function URL | e2e test suite only |
+
+The e2e suite does not get its own dedicated IAM identity. Whoever runs the
+`run-e2e` skill already has AWS credentials capable of deploying the e2e CDK
+stack, and deploy permissions are a superset of invoke permissions in any
+realistic setup — so the e2e suite signs its test requests with those same
+ambient credentials. The e2e assertions ("a signed request succeeds," "an
+unsigned request gets 403," "a malformed body gets 400") don't require a
+specifically-scoped identity, just the presence or absence of a valid signature.
 
 No in-code check restricts which routes an authenticated identity may call
 (e.g. the Pi's identity could technically call GET too) — any successfully
@@ -164,9 +173,16 @@ educational, single-device project.
   including the CRC-fail case), the SQLite queue (insert/flush/failure-leaves-row),
   and the collector loop using `FakeSensor` + a stubbed HTTP client. No hardware or
   AWS needed.
-- **Cloud (local)**: AWS Blocks' `npm run dev` gives a local server with an
-  in-memory-equivalent `DistributedTable`; integration-style tests hit
-  `localhost:3000` and assert on stored/returned items. No AWS account needed.
+- **Cloud (local)**: the route logic is written as plain functions (parsed
+  request in, response out), separate from the Lambda entry point that wraps
+  them with Powertools' router. Local tests import and call those functions
+  directly in-process — no HTTP server involved. Because the test runs in a
+  plain Node process, the `DistributedTable` import resolves to its local
+  in-memory implementation, so this needs no AWS account. (This sidesteps an
+  open question: a hand-written CDK-layer Lambda behind a Function URL is a
+  real AWS construct with no documented `npm run dev` equivalent, unlike
+  `ApiNamespace` methods — direct function invocation avoids depending on
+  that.)
 - **Cloud (e2e, real AWS)**: a separate, isolated deployment (see below) exercised
   by a real test suite: clear the e2e table, POST a known reading, GET it back and
   assert the round-trip, confirm a malformed POST gets 400, confirm an unsigned
@@ -174,6 +190,25 @@ educational, single-device project.
 - Not automated: the actual DS18B20 hardware read and a real IAM-signed call from
   the physical Pi over the internet — verified manually once deployed, matching
   the original "see it work end-to-end" goal.
+
+## Pi deployment
+
+Raspberry Pi Connect (the remote access tool in use) provides only a
+browser-based interactive shell — no `scp`/`rsync`/SSH `ProxyCommand` support,
+and sessions don't persist state. So there's no automated push path onto the Pi.
+Instead, `pi/` is deployed by running one command by hand, pasted into the
+Connect browser shell:
+
+```
+git fetch && git checkout <ref> && git pull && sudo systemctl restart fermento-collector
+```
+
+`<ref>` is any branch or `main` — the same single mechanism covers both trying a
+branch on real hardware before merging and deploying `main` for real. No
+systemd auto-pull timer, since that would only cover `main` and wouldn't help
+test unmerged branches. The `deploy` skill's job re: the Pi is to print this
+exact command for a given ref for you to paste — Claude has no tool access to
+drive Raspberry Pi Connect's browser UI itself.
 
 ## E2E environment
 
@@ -194,8 +229,8 @@ Three Claude Code skills, built with the skill-creator conventions:
 1. **`run-e2e`** — deploys/updates the `fermento-e2e` stack, clears its table,
    runs the e2e test suite, reports pass/fail.
 2. **`deploy`** — deploys the cloud app to the prod (`fermento-cloud`) Scope, and
-   rsyncs `pi/` to the Raspberry Pi over SSH followed by a `systemctl restart` of
-   the collector service.
+   prints the git-checkout-and-restart command (see "Pi deployment" above) for
+   you to paste into the Raspberry Pi Connect shell.
 3. **`read-fermento-api`** — a portable skill, meant to be copied into the
    external AI agent's own project, documenting the prod `GET /readings`
    endpoint: URL, the SigV4/IAM auth requirement, query params, response shape,
