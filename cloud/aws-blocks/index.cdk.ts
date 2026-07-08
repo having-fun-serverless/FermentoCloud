@@ -53,6 +53,13 @@ const readingsFn = new NodejsFunction(blocksStack, 'ReadingsHandler', {
   },
   environment: {
     BLOCKS_ENV: isE2E ? 'e2e' : 'prod',
+    // Required at runtime by DistributedTable (and other Blocks resources) to
+    // derive physical resource names (e.g. DynamoDB table names). Without this,
+    // Scope's constructor falls back to no stack prefix at all, and table
+    // lookups resolve to the wrong (non-existent) name. See
+    // @aws-blocks/core/src/common/index.ts and blocks-backend.ts for the
+    // equivalent handling in the framework's own Handler Lambda.
+    BLOCKS_STACK_NAME: blocksStack.stackName,
   },
 });
 
