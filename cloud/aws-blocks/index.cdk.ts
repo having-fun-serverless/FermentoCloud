@@ -3,6 +3,7 @@ import { RemovalPolicies, Mixins } from 'aws-cdk-lib';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import { Table } from 'aws-cdk-lib/aws-dynamodb';
 
 import { BlocksStack, SandboxDisableDeletionProtection } from '@aws-blocks/blocks/cdk';
 import { fileURLToPath } from 'node:url';
@@ -62,6 +63,17 @@ const readingsFn = new NodejsFunction(blocksStack, 'ReadingsHandler', {
     BLOCKS_STACK_NAME: blocksStack.stackName,
   },
 });
+
+// DistributedTable's own grantReadWriteData(this.handler) only covers the
+// framework's shared Handler Lambda (resolved by walking up the construct
+// tree), never this hand-rolled readingsFn — which by design bypasses that
+// shared Handler (see the "Why a hand-written Lambda" note above). So we
+// import the already-provisioned readings table by its known physical name
+// (same DistributedTable/Scope naming formula used elsewhere in this repo)
+// and grant readingsFn access to it directly.
+const readingsTableName = `${stackName}-${isE2E ? 'fermento-e2e' : 'fermento-cloud'}-readings`;
+const readingsTable = Table.fromTableName(blocksStack, 'ReadingsTableRef', readingsTableName);
+readingsTable.grantReadWriteData(readingsFn);
 
 const readingsFnUrl = readingsFn.addFunctionUrl({
   authType: lambda.FunctionUrlAuthType.AWS_IAM,
