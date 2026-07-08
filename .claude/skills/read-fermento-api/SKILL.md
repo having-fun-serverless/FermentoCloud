@@ -13,9 +13,11 @@ identity) with permission to invoke this specific Function URL.
 
 **Endpoint:** the Function URL is deployment-specific — get it from whoever
 runs FermentoCloud's `deploy` skill/CDK stack (`ReadingsFunctionUrl` stack
-output). Treat it as configuration, not something to hardcode.
+output). Treat it as configuration, not something to hardcode. Lambda Function
+URLs always end in a trailing `/`, so append `readings` directly with no
+extra slash (e.g. `f"{function_url}readings"`, not `f"{function_url}/readings"`).
 
-**Request:** `GET <function-url>/readings?since=<ISO8601>&limit=<N>`
+**Request:** `GET <function-url>readings?since=<ISO8601>&limit=<N>`
 - `since` (optional): ISO 8601 timestamp; only readings strictly after this are
   returned. Defaults to 24 hours ago if omitted or invalid.
 - `limit` (optional): max items to return, 1-1000. Defaults to 100 if omitted
@@ -27,7 +29,6 @@ output). Treat it as configuration, not something to hardcode.
 
 **Example (Python, using botocore for SigV4 signing):**
 ```python
-import json
 import boto3
 import requests
 from botocore.auth import SigV4Auth
