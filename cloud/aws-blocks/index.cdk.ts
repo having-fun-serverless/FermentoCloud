@@ -71,6 +71,11 @@ const readingsFn = new NodejsFunction(blocksStack, 'ReadingsHandler', {
 // import the already-provisioned readings table by its known physical name
 // (same DistributedTable/Scope naming formula used elsewhere in this repo)
 // and grant readingsFn access to it directly.
+// This duplicates @aws-blocks/core's computeScopeFullId formula by hand — if
+// the 'readings' block id or the fermento-e2e/fermento-cloud scope names in
+// index.ts ever change, this string must be updated to match, or the grant
+// silently targets a name that no longer exists (no compile-time signal —
+// only a runtime AccessDeniedException/ResourceNotFoundException later).
 const readingsTableName = `${stackName}-${isE2E ? 'fermento-e2e' : 'fermento-cloud'}-readings`;
 const readingsTable = Table.fromTableName(blocksStack, 'ReadingsTableRef', readingsTableName);
 readingsTable.grantReadWriteData(readingsFn);
