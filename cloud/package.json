@@ -11,7 +11,7 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test aws-blocks",
+    "test": "tsx --test aws-blocks/**/*.test.ts",
     "test:e2e": "tsx --test e2e/readings.e2e.test.ts",
     "sandbox": "tsx aws-blocks/scripts/sandbox.ts",
     "sandbox:destroy": "tsx -C cdk aws-blocks/scripts/sandbox-destroy.ts",
