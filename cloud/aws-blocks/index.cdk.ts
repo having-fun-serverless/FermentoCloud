@@ -1,10 +1,13 @@
 import * as cdk from 'aws-cdk-lib';
 import { RemovalPolicies, Mixins } from 'aws-cdk-lib';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
+import * as iam from 'aws-cdk-lib/aws-iam';
 
 import { BlocksStack, SandboxDisableDeletionProtection } from '@aws-blocks/blocks/cdk';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { getStackName } from '@aws-blocks/blocks/scripts';
+import { getStackId, getStackName } from '@aws-blocks/blocks/scripts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -12,23 +15,59 @@ const app = new cdk.App();
 
 const sandboxMode = app.node.tryGetContext('sandboxMode') === 'true';
 const projectRoot = app.node.tryGetContext('projectRoot') || process.cwd();
+const isE2E = process.env.BLOCKS_ENV === 'e2e';
 
-const stackName = getStackName({ sandbox: sandboxMode, projectRoot });
+// Stack naming: sandbox uses Blocks' own per-machine sandbox id. Otherwise we
+// pick prod vs e2e ourselves (Blocks' own getStackName only distinguishes
+// sandbox/prod, with no third-environment concept), reusing the same stable
+// project stackId so both stacks are clearly related in the AWS console.
+const stackName = sandboxMode
+  ? getStackName({ sandbox: true, projectRoot })
+  : `${getStackId(projectRoot)}-${isE2E ? 'e2e' : 'prod'}`;
+
 export const blocksStack = await BlocksStack.create(app, stackName, {
   backendHandlerPath: join(__dirname, 'index.handler.ts'),
-  backendCDKPath: join(__dirname, 'index.ts')
+  backendCDKPath: join(__dirname, 'index.ts'),
 });
 
 if (sandboxMode) {
-  // Make all resources deletable so sandbox:destroy can clean up the entire stack.
-  // This overrides removal policies and deletion protection (e.g. RDS) for every
-  // resource in the stack, including any you add below.
-  // Remove these lines if you want to manage teardown behavior yourself.
   RemovalPolicies.of(blocksStack).destroy();
   Mixins.of(blocksStack).apply(new SandboxDisableDeletionProtection());
-
-  // Tell the runtime that cookies need cross-domain attributes (frontend on
-  // localhost, API on API Gateway — different registrable domains).
-  blocksStack.handler.addEnvironment('BLOCKS_SANDBOX', 'true');
 }
 
+// ─── Readings API: custom Lambda behind an IAM-authenticated Function URL ────
+// Not built with ApiNamespace: our callers (a Python script on the Pi, an
+// external AI agent) aren't a JS frontend, and both need real IAM/SigV4 auth
+// enforced by AWS itself — which ApiNamespace's shared-Lambda RPC model can't
+// scope per route (auth there is an in-code check per method, not a route-level
+// authorizer). See the design spec's "Why a hand-written Lambda" section.
+const readingsFn = new NodejsFunction(blocksStack, 'ReadingsHandler', {
+  entry: join(__dirname, 'readings.handler.ts'),
+  handler: 'handler',
+  runtime: lambda.Runtime.NODEJS_22_X,
+  bundling: {
+    // Without this, DistributedTable (and any other Block import) resolves to
+    // its in-memory mock even in the deployed Lambda — this is the exact
+    // option @aws-blocks/core's own Lambda bundling uses internally.
+    esbuildArgs: { '--conditions': 'aws-runtime' },
+  },
+  environment: {
+    BLOCKS_ENV: isE2E ? 'e2e' : 'prod',
+  },
+});
+
+const readingsFnUrl = readingsFn.addFunctionUrl({
+  authType: lambda.FunctionUrlAuthType.AWS_IAM,
+});
+
+new cdk.CfnOutput(blocksStack, 'ReadingsFunctionUrl', { value: readingsFnUrl.url });
+
+// IAM identities only exist for the prod stack — the e2e suite signs with
+// whatever ambient AWS credentials already deployed the e2e stack.
+if (!isE2E) {
+  const piWriter = new iam.User(blocksStack, 'PiWriterUser', { userName: 'fermento-pi-writer' });
+  readingsFnUrl.grantInvokeUrl(piWriter);
+
+  const agentReader = new iam.User(blocksStack, 'AgentReaderUser', { userName: 'fermento-agent-reader' });
+  readingsFnUrl.grantInvokeUrl(agentReader);
+}
