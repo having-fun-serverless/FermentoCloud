@@ -1,0 +1,16 @@
+[Unit]
+Description=FermentoCloud temperature collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/FermentoCloud/pi
+EnvironmentFile=/home/pi/FermentoCloud/pi/.env
+ExecStart=/home/pi/FermentoCloud/pi/.venv/bin/python /home/pi/FermentoCloud/pi/main.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
