@@ -27,6 +27,11 @@ extra slash (e.g. `f"{function_url}readings"`, not `f"{function_url}/readings"`)
 "timestamp": string, "metric": "temperature", "value": number } ] }`.
 `value` is always Celsius. Readings are ordered ascending by `timestamp`.
 
+**Getting the *latest* readings:** because results are ascending and `limit`
+returns the first N *after* `since`, a bare `?limit=N` gives you the oldest N in
+the window, not the newest. To poll the most recent data, pass a recent `since`
+(e.g. your last-seen timestamp) and read the tail of the returned array.
+
 **Example (Python, using botocore for SigV4 signing):**
 ```python
 import boto3
@@ -49,3 +54,12 @@ readings = response.json()["readings"]
 An unsigned or wrongly-signed request gets `403`. A malformed/out-of-range
 `since`/`limit` is silently clamped to the defaults above, never a 400 — this
 endpoint favors returning something reasonable over failing a poll.
+
+**Percent-encode query params before signing.** SigV4 signs the canonical
+(percent-encoded) query string, so the params you sign must match the params you
+send byte-for-byte. The `since` timestamp contains colons — if you build the URL
+by hand and don't encode them, the signature covers a different query string than
+the wire request and you get a `403`. The example above avoids this because
+`AWSRequest` + `requests` encode the query for you; only hand-built URLs are at
+risk. Encode with `urllib.parse.urlencode({...})` (or your language's
+equivalent) before both signing and sending.
