@@ -1,60 +1,53 @@
-# AWS Blocks App
+# FermentoCloud — cloud backend
 
-Real-time todo app with authentication, per-user data isolation, and live sync across tabs.
+The AWS side of FermentoCloud: stores bioreactor temperature readings and
+serves them back over an IAM-authenticated read API. Built with CDK + AWS
+Blocks. See the [project README](../README.md) for the full pipeline.
 
-## Getting Started
+## What's here
 
-```bash
-npm run dev          # Start local dev server (mocks, no AWS needed)
-npm run test:e2e     # Run API tests
-npm run sandbox      # Deploy to AWS sandbox
-```
+The ingest and read endpoints are a hand-written Lambda behind an
+**IAM-authenticated Function URL** (SigV4), not an ApiNamespace RPC — because
+the callers are a Python collector on the Pi and external agents, which need
+real per-identity IAM auth rather than a JS-frontend RPC client.
 
-Open http://localhost:3000 after `npm run dev`.
+- **`POST /readings`** — ingest a reading; the Pi collector calls this.
+- **`GET /readings?since=&limit=`** — read recent readings, ordered ascending
+  by timestamp.
+- Readings persist in a **DynamoDB** `DistributedTable`, keyed by
+  `deviceId` (partition) + `timestamp` (sort), validated with a Zod schema.
+- Two scoped IAM users are created on non-e2e deploys:
+  `fermento-pi-writer` (invoke ingest) and `fermento-agent-reader` (invoke read).
 
-## Project Structure
+## Project structure
 
 | Path | Purpose |
 |------|---------|
-| `aws-blocks/index.ts` | Backend: auth, data model, API, real-time channels |
-| `src/index.ts` | Frontend: todo UI with live updates |
-| `test/e2e.test.ts` | Tests: auth, CRUD, conflicts, real-time |
-| `index.html` | HTML shell |
-
-## What's Included
-
-- **AuthBasic** — sign up / sign in / sign out with JWT sessions
-- **DistributedTable** — todos stored in DynamoDB with Zod schema validation
-- **Optimistic locking** — `version` field + `ifFieldEquals` prevents lost updates
-- **Realtime** — todo changes broadcast to all connected tabs via WebSocket
+| `aws-blocks/index.ts` | Data model: `Scope`, DynamoDB `readings` table, Zod schema. |
+| `aws-blocks/index.cdk.ts` | Infra: readings Lambda, Function URL, IAM users/grants. |
+| `aws-blocks/readings.handler.ts` | Lambda handler routing `GET`/`POST /readings`. |
+| `aws-blocks/readings.ts` | Reading read/write logic against the table. |
+| `e2e/readings.e2e.test.ts` | End-to-end tests against a deployed Function URL. |
+| `e2e/sigv4.ts` | SigV4 signing helper for the e2e client. |
+| `e2e/clear-table.ts` | Clears the e2e table between runs. |
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `npm run dev` | Local dev with mock storage |
-| `npm run test:e2e` | Test API via direct imports |
-| `npm run typecheck` | TypeScript type checking |
-| `npm run sandbox` | Deploy backend to AWS, serve frontend locally |
-| `npm run deploy` | Full production deploy |
-| `npm run sandbox:destroy` | Tear down sandbox resources |
+| `npm run deploy` | Deploy the production stack. |
+| `BLOCKS_ENV=e2e npm run deploy` | Deploy the e2e stack. |
+| `npm test` | Run unit tests (`aws-blocks/**/*.test.ts`). |
+| `npm run test:e2e` | Run e2e tests against a deployed Function URL. |
+| `npm run typecheck` | TypeScript type checking. |
+| `npm run sandbox` | Deploy a personal sandbox stack. |
+| `npm run destroy` / `sandbox:destroy` | Tear down the prod / sandbox stack. |
 
-## Building on this template
+`npm run deploy` prints the `ReadingsFunctionUrl` output — that URL plus an
+access key for the relevant IAM user is what clients need. Deploying and
+running e2e are also wrapped by the [`deploy`](../.claude/skills/deploy) and
+[`run-e2e`](../.claude/skills/run-e2e) skills.
 
-The test file (`test/e2e.test.ts`) is structured in sections — Auth, CRUD, Conflicts, Realtime. Add your own tests by copying a `test(...)` block and changing the assertion. The API methods in `aws-blocks/index.ts` follow a consistent pattern: authenticate → do work → broadcast.
+## Requires
 
-To replace the todo domain with your own: update the Zod schema, rename the API methods, and adjust the tests. The auth and real-time wiring stays the same.
-
-## Stack naming
-
-Your CloudFormation stack names are derived from the `stackId` in `.blocks/config.json` — generated at scaffold time from your project name plus a random suffix (e.g., `my-app-a3x9kf`). Production deploys as `<stackId>-prod` and sandbox as `<stackId>-<username>-<random>`, where the sandbox identifier is per-machine and stored in `.blocks-sandbox/sandbox-id.txt` (gitignored). This lets multiple developers share a testing account without colliding.
-
-To change the stack name, edit `stackId` in `.blocks/config.json`. For dynamic naming logic, modify `aws-blocks/index.cdk.ts` directly.
-
-## For Agents
-
-Full Building Block documentation: `node_modules/@aws-blocks/blocks/README.md`
-
-**Do not use local files or in-memory storage** — use Building Blocks for all data persistence and cloud abstractions (they mock locally and deploy to AWS automatically).
-
-Start in `aws-blocks/index.ts` (backend) and `src/index.ts` (frontend). Test via `npm run test:e2e`. The API transport (JSON-RPC) is auto-generated and intentionally invisible — do not curl endpoints directly. Testing is best done through the e2e tests which use the same typed client as the frontend.
+Node >= 22 and AWS credentials with permission to deploy the stack.
