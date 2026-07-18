@@ -3,6 +3,15 @@
 Reads a DS18B20 temperature probe over 1-Wire and uploads readings to the
 FermentoCloud cloud API, buffering locally in SQLite when the network is down.
 
+## Requirements
+
+The systemd unit (`systemd/fermento-collector.service`) is hardcoded to run as a
+user named **`pi`** with the repo cloned at **`/home/pi/FermentoCloud`**. If your
+Raspberry Pi login is a different username, either create a `pi` user
+(`sudo useradd --create-home --shell /bin/bash pi`) and set everything up under
+it, or edit `User=` and the `/home/pi/...` paths in the unit file to match your
+user before installing it.
+
 ## One-time hardware setup
 
 1. Wire the DS18B20 data pin to a GPIO pin (with a 4.7kΩ pull-up to 3.3V) per
