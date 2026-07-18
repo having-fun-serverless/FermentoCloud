@@ -16,9 +16,14 @@ class UploadError(Exception):
 def upload_reading(function_url: str, region: str, timestamp: str, temperature_c: float) -> None:
     body = json.dumps({"timestamp": timestamp, "temperatureC": temperature_c})
 
+    # The handler routes ingest on POST /readings; the Function URL itself is the
+    # bare root (path /), so append the route. rstrip keeps this correct whether
+    # or not the configured URL has a trailing slash.
+    endpoint = function_url.rstrip("/") + "/readings"
+
     request = AWSRequest(
         method="POST",
-        url=function_url,
+        url=endpoint,
         data=body,
         headers={"Content-Type": "application/json"},
     )

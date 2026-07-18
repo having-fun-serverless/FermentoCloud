@@ -23,8 +23,11 @@ def test_upload_reading_sends_a_signed_post(mock_session_cls, mock_post):
     )
 
     assert mock_post.called
-    _, kwargs = mock_post.call_args
+    args, kwargs = mock_post.call_args
     assert "Authorization" in kwargs["headers"]
+    # Must target the /readings route, not the bare Function URL root.
+    posted_url = args[0] if args else kwargs.get("url")
+    assert posted_url == "https://example.lambda-url.us-east-1.on.aws/readings"
 
 
 @patch("uploader.requests.post")
